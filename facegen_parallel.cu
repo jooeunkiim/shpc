@@ -17,6 +17,9 @@
 extern int mpi_rank, mpi_size;
 extern int num_to_gen;
 
+static float* myInput;
+static float* myOutput;
+
 static float* gpu_mem_input;
 static float* gpu_mem_fm0;
 static float* gpu_mem_fm1;
@@ -161,12 +164,20 @@ void facegen_init() {
    * cudaMalloc(...)
    */
 
-  cudaMalloc(&gpu_mem_input, num_to_gen * 100 * sizeof(float));
+  int division = num_to_gen / mpi_size;
+  if (num_to_gen % mpi_size > mpi_rank) division++;
+  
+  if (mpi_rank != 0) {
+    myInput = (float *) aligned_alloc(64, division * 100 * sizeof(float));
+    myOutput = (float *) aligned_alloc(64, division * 64 * 64 * 3 * sizeof(float));
+  }
+
+  cudaMalloc(&gpu_mem_input, division * 100 * sizeof(float));
   cudaMalloc(&gpu_mem_fm0, 4 * 4 * 512 * sizeof(float));
   cudaMalloc(&gpu_mem_fm1, 8 * 8 * 256 * sizeof(float));
   cudaMalloc(&gpu_mem_fm2, 16 * 16 * 128 * sizeof(float));
   cudaMalloc(&gpu_mem_fm3, 32 * 32 * 64 * sizeof(float));
-  cudaMalloc(&gpu_mem_output, num_to_gen * 64 * 64 * 3 * sizeof(float));
+  cudaMalloc(&gpu_mem_output, division * 64 * 64 * 3 * sizeof(float));
 
   cudaMalloc(&gpu_mem_proj_w, 100 * 8192 * sizeof(float));
   cudaMalloc(&gpu_mem_proj_b, 8192 * sizeof(float));
@@ -210,6 +221,28 @@ void facegen(int num_to_gen, float *network, float *inputs, float *outputs) {
    * Device-to-host memory copy
    */
 
+
+  int division = num_to_gen / mpi_size;
+  if (num_to_gen % mpi_size > mpi_rank) {
+    division++;
+  }
+  // printf("\n rank %d - %d images\n", mpi_rank, division);
+
+  if (mpi_rank == 0) {
+    myInput = inputs;
+    myOutput = outputs;
+    int idx = division;
+    for (int i = 1; i < mpi_size; ++i) {
+      int div = num_to_gen / mpi_size;
+      if (num_to_gen % mpi_size > i) div++;
+      MPI_Send(inputs + idx * 100, div * 100, MPI_FLOAT, i, 0, MPI_COMM_WORLD);
+      idx += div;
+    }
+  } else {
+    MPI_Recv(myInput, division * 100, MPI_FLOAT, 0, 0, MPI_COMM_WORLD, NULL);
+  }
+  MPI_Barrier(MPI_COMM_WORLD);
+
   float *proj_w = network; network += 100 * 8192;
   float *proj_b = network; network += 8192;
   float *bn0_beta = network; network += 512;
@@ -237,7 +270,8 @@ void facegen(int num_to_gen, float *network, float *inputs, float *outputs) {
   float *tconv4_w = network; network += 5 * 5 * 3 * 64;
   float *tconv4_b = network; network += 3;
   
-  cudaMemcpy(gpu_mem_input, inputs, num_to_gen * 100 * sizeof(float), cudaMemcpyHostToDevice);
+  
+  cudaMemcpy(gpu_mem_input, myInput, division * 100 * sizeof(float), cudaMemcpyHostToDevice);
   cudaMemcpy(gpu_mem_proj_w, proj_w, 100 * 8192 * sizeof(float), cudaMemcpyHostToDevice);
   cudaMemcpy(gpu_mem_proj_b, proj_b, 8192 * sizeof(float), cudaMemcpyHostToDevice);
   cudaMemcpy(gpu_mem_bn0_beta, bn0_beta, 512 * sizeof(float), cudaMemcpyHostToDevice);
@@ -270,9 +304,9 @@ void facegen(int num_to_gen, float *network, float *inputs, float *outputs) {
   dim3 blockDim(1, 8, 8); // number of blocks in a grid
   // dim3 gridDim(64, 64, 64); // number of threads in a block
 
-  #pragma omp parallel num_threads(64) shared(gpu_mem_input, gpu_mem_output)
+  #pragma omp parallel num_threads(32)
   #pragma omp for nowait
-  for (int n = 0; n < num_to_gen; ++n) {
+  for (int n = 0; n < division; ++n) {
 
     proj<<<1,1>>>(gpu_mem_input + n * 100, gpu_mem_fm0, gpu_mem_proj_w, gpu_mem_proj_b, 100, 8192);
     batch_norm<<<1,1>>>(gpu_mem_fm0, gpu_mem_bn0_beta, gpu_mem_bn0_gamma, gpu_mem_bn0_mean, gpu_mem_bn0_var, 4 * 4, 512);
@@ -302,12 +336,24 @@ void facegen(int num_to_gen, float *network, float *inputs, float *outputs) {
     tanh_layer<<<1,1>>>(gpu_mem_output + n * 64 * 64 * 3, 64 * 64 * 3);
   }
 
-  // CHECK_CUDA(cudaDeviceSynchronize());
   cudaDeviceSynchronize();
 
-  cudaMemcpy(outputs, gpu_mem_output, num_to_gen * 64 * 64 * 3 * sizeof(float), cudaMemcpyDeviceToHost);
+  cudaMemcpy(myOutput, gpu_mem_output, division * 64 * 64 * 3 * sizeof(float), cudaMemcpyDeviceToHost);
   cudaDeviceSynchronize();
 
+  if (mpi_rank == 0) {
+    int idx = division;
+    for (int i = 1; i < mpi_size; ++i) {
+      int div = num_to_gen / mpi_size;
+      if (num_to_gen % mpi_size > i) div++;
+      MPI_Recv(myOutput + idx * 64 * 64 * 3, div * 64 * 64 * 3, MPI_FLOAT, i, 0, MPI_COMM_WORLD, NULL);
+      idx += div;
+    }
+  } else {
+    MPI_Send(myOutput, division * 64 * 64 * 3, MPI_FLOAT, 0, 0, MPI_COMM_WORLD);
+  }
+  MPI_Barrier(MPI_COMM_WORLD);
+  cudaDeviceSynchronize();
 }
 
 void facegen_fin() {
@@ -316,11 +362,37 @@ void facegen_fin() {
    * Finalize required CUDA objects. For example,
    * cudaFree(...)
    */
-  // cudaFree(gpu_mem_input);
+  cudaFree(gpu_mem_input);
   cudaFree(gpu_mem_fm0);
   cudaFree(gpu_mem_fm1);
   cudaFree(gpu_mem_fm2);
   cudaFree(gpu_mem_fm3);
   cudaFree(gpu_mem_output);
+  cudaFree(gpu_mem_proj_w);
+  cudaFree(gpu_mem_proj_b);
+  cudaFree(gpu_mem_bn0_beta);
+  cudaFree(gpu_mem_bn0_gamma);
+  cudaFree(gpu_mem_bn0_mean);
+  cudaFree(gpu_mem_bn0_var);
+  cudaFree(gpu_mem_tconv1_w);
+  cudaFree(gpu_mem_tconv1_b);
+  cudaFree(gpu_mem_bn1_beta);
+  cudaFree(gpu_mem_bn1_gamma);
+  cudaFree(gpu_mem_bn1_mean);
+  cudaFree(gpu_mem_bn1_var);
+  cudaFree(gpu_mem_tconv2_w);
+  cudaFree(gpu_mem_tconv2_b);
+  cudaFree(gpu_mem_bn2_beta);
+  cudaFree(gpu_mem_bn2_gamma);
+  cudaFree(gpu_mem_bn2_mean);
+  cudaFree(gpu_mem_bn2_var);
+  cudaFree(gpu_mem_tconv3_w);
+  cudaFree(gpu_mem_tconv3_b);
+  cudaFree(gpu_mem_bn3_beta);
+  cudaFree(gpu_mem_bn3_gamma);
+  cudaFree(gpu_mem_bn3_mean);
+  cudaFree(gpu_mem_bn3_var);
+  cudaFree(gpu_mem_tconv4_w);
+  cudaFree(gpu_mem_tconv4_b);
 }
 

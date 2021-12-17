@@ -22,7 +22,7 @@ facegen_parallel.o: facegen_parallel.cu
 	$(NVCC) -ccbin $(CC) -c -o $@ $^
 
 clean:
-	rm -rf facegen_seq facegen_parallel $(OBJECTS) facegen_seq.o facegen_parallel.o output*
+	rm -rf facegen_seq facegen_parallel $(OBJECTS) facegen_seq.o facegen_parallel.o
 
 performance:
 	salloc $(SLURM_FLAGS) ./facegen_parallel network.bin input3.txt output3.txt output3.bmp

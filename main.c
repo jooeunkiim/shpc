@@ -7,9 +7,9 @@
 #include "qdbmp.h"
 #include "facegen.h"
 
+int mpi_rank, mpi_size;
 const int NETWORK_SIZE_IN_BYTES = 20549132;
 int num_to_gen;
-static int mpi_rank, mpi_size;
 
 // read network binary
 float* read_network(char *fn) {
@@ -103,9 +103,11 @@ void write_image(char *fn, int num_to_gen, float *outputs) {
 }
 
 int main(int argc, char **argv) {
-    // MPI_Comm_rank(MPI_COMM_WORLD, &mpi_rank);
-    // MPI_Comm_size(MPI_COMM_WORLD, &mpi_size);
+    if (mpi_rank == 0) MPI_Init(&argc, &argv);
 
+    MPI_Comm_rank(MPI_COMM_WORLD, &mpi_rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &mpi_size);
+    
     if (argc != 5) {
         fprintf(stderr, "Usage: %s <network binary> <input data> <output data> <output image>\n", argv[0]);
         fprintf(stderr, " e.g., %s network.bin input1.txt output1.txt output1.bmp\n", argv[0]);
@@ -113,33 +115,56 @@ int main(int argc, char **argv) {
     }
 
     // int num_to_gen;
-    float *network = read_network(argv[1]);
-    float *inputs = read_inputs(argv[2], &num_to_gen);
-    float *outputs = (float*)malloc(num_to_gen * 64 * 64 * 3 * sizeof(float));
+    float *inputs;
+    float *outputs;
+    float *network;
+    if (mpi_rank == 0) {
+        network = read_network(argv[1]);
+        inputs = read_inputs(argv[2], &num_to_gen);
+        int buf[1];
+        buf[0] = num_to_gen;
+        for (int i=1; i < mpi_size; ++i) {
+            MPI_Send(buf, 1, MPI_INT, i, 0, MPI_COMM_WORLD);
+            MPI_Send(network, NETWORK_SIZE_IN_BYTES / sizeof(float), MPI_INT, i, 0, MPI_COMM_WORLD);
+        }
+        outputs = (float*)malloc(num_to_gen * 64 * 64 * 3 * sizeof(float));
+    } else {
+        int buf[1];
+        network = (float*)malloc(NETWORK_SIZE_IN_BYTES);
+        MPI_Recv(buf, 1, MPI_INT, 0, 0, MPI_COMM_WORLD, NULL);
+        MPI_Recv(network, NETWORK_SIZE_IN_BYTES / sizeof(float), MPI_INT, 0, 0, MPI_COMM_WORLD, NULL);
+        num_to_gen = buf[0];
+    }
+    MPI_Barrier(MPI_COMM_WORLD);
 
     // initialize; does not count into elapsed time
-    printf("Initializing..."); fflush(stdout);
+    if (mpi_rank == 0) printf("Initializing..."); fflush(stdout);
     facegen_init();
-    printf(" done!\n");
+    if (mpi_rank == 0) printf(" done!\n");
 
     // main calculation
-    printf("Calculating..."); fflush(stdout);
+    if (mpi_rank == 0) printf("Calculating..."); fflush(stdout);
     timer_start(0);
     facegen(num_to_gen, network, inputs, outputs);
-    double elapsed = timer_stop(0);
-    printf(" done!\n");
-    printf("Elapsed time : %.6f sec\n", elapsed);
+    MPI_Barrier(MPI_COMM_WORLD);
 
-    write_outputs(argv[3], num_to_gen, outputs);
-    write_image(argv[4], num_to_gen, outputs);
+    if (mpi_rank == 0) {
+        double elapsed = timer_stop(0);
+        printf(" done!\n");
+        printf("Elapsed time : %.6f sec\n", elapsed);
+        write_outputs(argv[3], num_to_gen, outputs);
+        write_image(argv[4], num_to_gen, outputs);
+        // finalize; does not count into elapsed time
+        printf("Finalizing..."); fflush(stdout);
+    }
 
-    // finalize; does not count into elapsed time
-    printf("Finalizing..."); fflush(stdout);
     facegen_fin();
     free(network);
     free(inputs);
     free(outputs);
-    printf(" done!\n");
+    
+    MPI_Finalize();
+    if (mpi_rank == 0) printf(" done!\n");
 
     return 0;
 }
