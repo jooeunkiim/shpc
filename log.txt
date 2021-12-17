@@ -1,0 +1,21 @@
+salloc: Pending job allocation 85033
+salloc: job 85033 queued and waiting for resources
+salloc: job 85033 has been allocated resources
+salloc: Granted job allocation 85033
+Reading 'network.bin'... done!
+Reading 'input3.txt'... done!
+Initializing... done!
+Calculating... done!
+Elapsed time : 37.809092 sec
+Writing 'output3.txt'... done!
+Writing 'output3.bmp'... done!
+Finalizing... done!
+salloc: Relinquishing job allocation 85033
+salloc: Pending job allocation 85036
+salloc: job 85036 queued and waiting for resources
+salloc: job 85036 has been allocated resources
+salloc: Granted job allocation 85036
+pixel (0, 25, 2) of 0th image differs.
+output3.txt : -0.423400
+answer3.txt : -0.420000
+salloc: Relinquishing job allocation 85036
