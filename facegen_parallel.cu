@@ -164,9 +164,7 @@ void facegen_init() {
 void facegen(int num_to_gen, float *network, float *inputs, float *outputs) {
 
   int division = num_to_gen / mpi_size;
-  if (num_to_gen % mpi_size > mpi_rank) {
-    division++;
-  }
+  if (num_to_gen % mpi_size > mpi_rank) division++;
 
   if (mpi_rank == 0) {
     myInput = inputs;
