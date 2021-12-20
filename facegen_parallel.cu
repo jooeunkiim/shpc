@@ -10,6 +10,7 @@
 
 extern int mpi_rank, mpi_size;
 extern int num_to_gen;
+extern int NETWORK_SIZE_IN_BYTES;
 
 static float* myInput;
 static float* myOutput;
@@ -158,7 +159,6 @@ void facegen_init() {
   cudaMalloc(&gpu_mem_tconv4_w, 5 * 5 * 3 * 64 * sizeof(float));
   cudaMalloc(&gpu_mem_tconv4_b, 3 * sizeof(float));
 
-  cudaDeviceSynchronize();
 }
 
 void facegen(int num_to_gen, float *network, float *inputs, float *outputs) {
@@ -177,9 +177,12 @@ void facegen(int num_to_gen, float *network, float *inputs, float *outputs) {
       if (num_to_gen % mpi_size > i) div++;
       MPI_Send(inputs + idx * 100, div * 100, MPI_FLOAT, i, 0, MPI_COMM_WORLD);
       idx += div;
+      MPI_Send(network, NETWORK_SIZE_IN_BYTES / sizeof(float), MPI_INT, i, 0, MPI_COMM_WORLD);
     }
   } else {
+    network = (float*)malloc(NETWORK_SIZE_IN_BYTES);
     MPI_Recv(myInput, division * 100, MPI_FLOAT, 0, 0, MPI_COMM_WORLD, NULL);
+    MPI_Recv(network, NETWORK_SIZE_IN_BYTES / sizeof(float), MPI_INT, 0, 0, MPI_COMM_WORLD, NULL);
   }
   MPI_Barrier(MPI_COMM_WORLD);
 
@@ -302,7 +305,6 @@ void facegen(int num_to_gen, float *network, float *inputs, float *outputs) {
     MPI_Send(myOutput, division * 64 * 64 * 3, MPI_FLOAT, 0, 0, MPI_COMM_WORLD);
   }
   MPI_Barrier(MPI_COMM_WORLD);
-  cudaDeviceSynchronize();
 }
 
 void facegen_fin() {
