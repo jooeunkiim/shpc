@@ -114,6 +114,7 @@ int main(int argc, char **argv) {
         exit(EXIT_FAILURE);
     }
 
+    // int num_to_gen;
     float *inputs;
     float *outputs;
     float *network;
@@ -122,11 +123,16 @@ int main(int argc, char **argv) {
         inputs = read_inputs(argv[2], &num_to_gen);
         int buf[1];
         buf[0] = num_to_gen;
-        for (int i=1; i < mpi_size; ++i) MPI_Send(buf, 1, MPI_INT, i, 0, MPI_COMM_WORLD);
+        for (int i=1; i < mpi_size; ++i) {
+            MPI_Send(buf, 1, MPI_INT, i, 0, MPI_COMM_WORLD);
+            MPI_Send(network, NETWORK_SIZE_IN_BYTES / sizeof(float), MPI_INT, i, 0, MPI_COMM_WORLD);
+        }
         outputs = (float*)malloc(num_to_gen * 64 * 64 * 3 * sizeof(float));
     } else {
         int buf[1];
+        network = (float*)malloc(NETWORK_SIZE_IN_BYTES);
         MPI_Recv(buf, 1, MPI_INT, 0, 0, MPI_COMM_WORLD, NULL);
+        MPI_Recv(network, NETWORK_SIZE_IN_BYTES / sizeof(float), MPI_INT, 0, 0, MPI_COMM_WORLD, NULL);
         num_to_gen = buf[0];
     }
     MPI_Barrier(MPI_COMM_WORLD);
@@ -141,21 +147,21 @@ int main(int argc, char **argv) {
     timer_start(0);
     facegen(num_to_gen, network, inputs, outputs);
     MPI_Barrier(MPI_COMM_WORLD);
-    double elapsed = timer_stop(0);
 
     if (mpi_rank == 0) {
+        double elapsed = timer_stop(0);
         printf(" done!\n");
         printf("Elapsed time : %.6f sec\n", elapsed);
         write_outputs(argv[3], num_to_gen, outputs);
         write_image(argv[4], num_to_gen, outputs);
         // finalize; does not count into elapsed time
         printf("Finalizing..."); fflush(stdout);
-        free(network);
-        free(inputs);
-        free(outputs);
     }
 
     facegen_fin();
+    free(network);
+    free(inputs);
+    free(outputs);
     
     MPI_Finalize();
     if (mpi_rank == 0) printf(" done!\n");
