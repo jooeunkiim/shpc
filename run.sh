@@ -16,8 +16,8 @@ salloc --nodes=1 --ntasks-per-node=1 --cpus-per-task=64 --partition=shpc \
 salloc --nodes=1 --ntasks-per-node=1 --cpus-per-task=2 --partition=shpc \
 ./compare_result output3.txt answer3.txt
 
-salloc --nodes=2 --ntasks-per-node=2 --cpus-per-task=32 --partition=shpc --gres=gpu:4 \
-./facegen_parallel network.bin input3.txt output3.txt output3.bmp
+salloc --nodes=2 --ntasks-per-node=1 --cpus-per-task=64 --partition=shpc --gres=gpu:4 \
+mpirun ./facegen_parallel network.bin input3.txt output3.txt output3.bmp
 
 salloc --nodes=2 --ntasks-per-node=1 --cpus-per-task=64 --partition=shpc --gres=gpu:4 \
 mpirun ./facegen_parallel network.bin input1.txt output1.txt output1.bmp

@@ -80,75 +80,40 @@ __global__ void relu(float *inout, int HWC) {
   }
 }
 
-__global__ void org_tconv(float *in, float *out, float *weight, float *bias, int H_IN, int W_IN, int C, int K) {
-  int H_OUT = H_IN * 2, W_OUT = W_IN * 2;
-  for (int h_out = 0; h_out < H_OUT; ++h_out) {
-    for (int w_out = 0; w_out < W_OUT; ++w_out) {
-      for (int k = 0; k < K; ++k) {
-        float ss = 0;
-        for (int r = 0; r < 5; ++r) {
-          for (int s = 0; s < 5; ++s) {
-            // top and left side has padding 3, bottom and right side has padding 2
-            // so subtract 3
-            int h_in = h_out - 3 + r;
-            int w_in = w_out - 3 + s;
-            // stride is 2, so check coordinates fall into input element or empty space
-            if (h_in % 2 == 0 && w_in % 2 == 0) {
-              h_in /= 2;
-              w_in /= 2;
-              // boundary check
-              if (0 <= h_in && h_in < H_IN && 0 <= w_in && w_in < W_IN) {
-                for (int c = 0; c < C; ++c) {
-                  // filter is stored in reverse; so use [4 - r][4 - s] instead of [r][s]
-                  // ss += in[h_in][w_in][c] * weight[4 - r][4 - s][k][c];
-                  ss += in[(h_in * W_IN + w_in) * C + c] * weight[(((4 - r) * 5 + (4 - s)) * K + k) * C + c];
-                }
-              }
-            }
-          }
-        }
-        ss += bias[k];
-        // out[h_out][w_out][k] = ss;
-        out[(h_out * W_OUT + w_out) * K + k] = ss;
-      }
-    }
-  }
-}
-
-// C를 병렬화해보기..!
-__global__ void tconv(float *in, float *out, float *weight, float *bias, int H_IN, int W_IN, int C, int K) {
+__global__ void init_c(float *out,int H_IN, int W_IN, int K) {
   int H_OUT = H_IN * 2, W_OUT = W_IN * 2;
   int h_out = blockDim.x * blockIdx.x + threadIdx.x;
   int w_out = blockDim.y * blockIdx.y + threadIdx.y;
   int k = blockDim.z * blockIdx.z + threadIdx.z;
   if (h_out >= H_OUT || w_out >= W_OUT || k >= K) return;
-  // for (int k = 0; k < K; ++k) {
-  float ss = 0;
-  for (int r = 0; r < 5; ++r) {
-    for (int s = 0; s < 5; ++s) {
-      // top and left side has padding 3, bottom and right side has padding 2
-      // so subtract 3
-      int h_in = h_out - 3 + r;
-      int w_in = w_out - 3 + s;
-      // stride is 2, so check coordinates fall into input element or empty space
-      if (h_in % 2 == 0 && w_in % 2 == 0) {
-        h_in /= 2;
-        w_in /= 2;
-        // boundary check
-        if (0 <= h_in && h_in < H_IN && 0 <= w_in && w_in < W_IN) {
-          for (int c = 0; c < C; ++c) {
-            // filter is stored in reverse; so use [4 - r][4 - s] instead of [r][s]
-            // ss += in[h_in][w_in][c] * weight[4 - r][4 - s][k][c];
+  out[(h_out * W_OUT + w_out) * K + k] = 0;
+}
+
+__global__ void tconv(float *in, float *out, float *weight, float *bias, int H_IN, int W_IN, int C, int K) {
+  int H_OUT = H_IN * 2, W_OUT = W_IN * 2;
+  int h_out = blockDim.x * blockIdx.x + threadIdx.x;
+  int c = blockDim.y * blockIdx.y + threadIdx.y;
+  int k = blockDim.z * blockIdx.z + threadIdx.z;
+  if (h_out >= H_OUT || c >= C  || k >= K) return;
+  // if (c >= C || k >= K) return;
+  for (int w_out = 0; w_out < W_OUT; ++w_out) {
+    float ss = 0;
+    for (int r = 0; r < 5; ++r) {
+      for (int s = 0; s < 5; ++s) {
+        int h_in = h_out - 3 + r;
+        int w_in = w_out - 3 + s;
+        if (h_in % 2 == 0 && w_in % 2 == 0) {
+          h_in /= 2;
+          w_in /= 2;
+          if (0 <= h_in && h_in < H_IN && 0 <= w_in && w_in < W_IN) {
             ss += in[(h_in * W_IN + w_in) * C + c] * weight[(((4 - r) * 5 + (4 - s)) * K + k) * C + c];
           }
         }
       }
     }
+    if (c == 0) ss += bias[k];
+    atomicAdd(&out[(h_out * W_OUT + w_out) * K + k], ss);
   }
-  ss += bias[k];
-  // out[h_out][w_out][k] = ss;
-  out[(h_out * W_OUT + w_out) * K + k] = ss;
-  // }
 }
 
 __global__ void tanh_layer(float *inout, int HWC) {
@@ -301,10 +266,11 @@ void facegen(int num_to_gen, float *network, float *inputs, float *outputs) {
   
   cudaDeviceSynchronize();
 
-  dim3 blockDim(1, 8, 8); // number of blocks in a grid
+  dim3 blockDim(8, 8, 16); // number of blocks in a grid
+  // dim3 blockDim1(8, 8); // number of blocks in a grid
   // dim3 gridDim(64, 64, 64); // number of threads in a block
 
-  #pragma omp parallel num_threads(32)
+  #pragma omp parallel num_threads(64)
   #pragma omp for nowait
   for (int n = 0; n < division; ++n) {
 
@@ -313,30 +279,36 @@ void facegen(int num_to_gen, float *network, float *inputs, float *outputs) {
     relu<<<1,1>>>(gpu_mem_fm0, 4 * 4 * 512);
 
     dim3 gridDim1(8, 8, 512);
-    tconv<<<gridDim1, blockDim>>>(gpu_mem_fm0, gpu_mem_fm1, gpu_mem_tconv1_w, gpu_mem_tconv1_b, 4, 4, 512, 256);
+    init_c<<<gridDim1, blockDim>>>(gpu_mem_fm1, 4, 4, 256);
+    dim3 gridDim11(8, 512, 256);
+    tconv<<<gridDim11, blockDim>>>(gpu_mem_fm0, gpu_mem_fm1, gpu_mem_tconv1_w, gpu_mem_tconv1_b, 4, 4, 512, 256);
 
     batch_norm<<<1,1>>>(gpu_mem_fm1, gpu_mem_bn1_beta, gpu_mem_bn1_gamma, gpu_mem_bn1_mean, gpu_mem_bn1_var, 8 * 8, 256);
     relu<<<1,1>>>(gpu_mem_fm1, 8 * 8 * 256);
 
     dim3 gridDim2(16, 16, 256);
-    tconv<<<gridDim2, blockDim>>>(gpu_mem_fm1, gpu_mem_fm2, gpu_mem_tconv2_w, gpu_mem_tconv2_b, 8, 8, 256, 128);
+    init_c<<<gridDim2, blockDim>>>(gpu_mem_fm2, 8, 8, 128);
+    dim3 gridDim22(16, 256, 128);
+    tconv<<<gridDim22, blockDim>>>(gpu_mem_fm1, gpu_mem_fm2, gpu_mem_tconv2_w, gpu_mem_tconv2_b, 8, 8, 256, 128);
 
     batch_norm<<<1,1>>>(gpu_mem_fm2, gpu_mem_bn2_beta, gpu_mem_bn2_gamma, gpu_mem_bn2_mean, gpu_mem_bn2_var, 16 * 16, 128);
     relu<<<1,1>>>(gpu_mem_fm2, 16 * 16 * 128);
 
     dim3 gridDim3(32, 32, 128);
-    tconv<<<gridDim3, blockDim>>>(gpu_mem_fm2, gpu_mem_fm3, gpu_mem_tconv3_w, gpu_mem_tconv3_b, 16, 16, 128, 64);
+    init_c<<<gridDim3, blockDim>>>(gpu_mem_fm3, 16, 16, 64);
+    dim3 gridDim33(32, 128, 64);
+    tconv<<<gridDim33, blockDim>>>(gpu_mem_fm2, gpu_mem_fm3, gpu_mem_tconv3_w, gpu_mem_tconv3_b, 16, 16, 128, 64);
 
     batch_norm<<<1,1>>>(gpu_mem_fm3, gpu_mem_bn3_beta, gpu_mem_bn3_gamma, gpu_mem_bn3_mean, gpu_mem_bn3_var, 32 * 32, 64);
     relu<<<1,1>>>(gpu_mem_fm3, 32 * 32 * 64);
 
     dim3 gridDim4(64, 64, 64);
-    tconv<<<gridDim4, blockDim>>>(gpu_mem_fm3, gpu_mem_output + n * 64 * 64 * 3, gpu_mem_tconv4_w, gpu_mem_tconv4_b, 32, 32, 64, 3);
+    init_c<<<gridDim4, blockDim>>>(gpu_mem_output + n * 64 * 64 * 3, 32, 32, 3);
+    dim3 gridDim44(64, 64, 3);
+    tconv<<<gridDim44, blockDim>>>(gpu_mem_fm3, gpu_mem_output + n * 64 * 64 * 3, gpu_mem_tconv4_w, gpu_mem_tconv4_b, 32, 32, 64, 3);
 
     tanh_layer<<<1,1>>>(gpu_mem_output + n * 64 * 64 * 3, 64 * 64 * 3);
   }
-
-  cudaDeviceSynchronize();
 
   cudaMemcpy(myOutput, gpu_mem_output, division * 64 * 64 * 3 * sizeof(float), cudaMemcpyDeviceToHost);
   cudaDeviceSynchronize();
