@@ -53,4 +53,4 @@
 
 [https://developer.download.nvidia.com/CUDA/training/StreamsAndConcurrencyWebinar.pdf](https://developer.download.nvidia.com/CUDA/training/StreamsAndConcurrencyWebinar.pdf)
 
-[https://www.nvidia.com/docs/IO/116711/sc11-multi-gpu.pdf](
+[https://www.nvidia.com/docs/IO/116711/sc11-multi-gpu.pdf](https://www.nvidia.com/docs/IO/116711/sc11-multi-gpu.pdf)
